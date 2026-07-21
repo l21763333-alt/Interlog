@@ -1,0 +1,4 @@
+interface:
+  display_name: "Iterlog"
+  short_description: "Evidence-backed development recaps"
+  default_prompt: "Use $iterlog to recap today's changes, optimization, verification, reflection, and next steps in this project."

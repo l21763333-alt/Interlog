@@ -1,0 +1,59 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"$PLUGIN_ROOT/tools/run_iterlog.sh\" --host codex session-context-hook",
+            "commandWindows": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"%PLUGIN_ROOT%\\tools\\run_iterlog.ps1\" --host codex session-context-hook",
+            "timeout": 10,
+            "statusMessage": "Iterlog: loading the portable runtime bridge"
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "matcher": "^auto$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"$PLUGIN_ROOT/tools/run_iterlog.sh\" --host codex capture-hook",
+            "commandWindows": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"%PLUGIN_ROOT%\\tools\\run_iterlog.ps1\" --host codex capture-hook",
+            "timeout": 60,
+            "statusMessage": "Iterlog: capturing context before automatic compaction"
+          }
+        ]
+      }
+    ],
+    "PostCompact": [
+      {
+        "matcher": "^auto$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"$PLUGIN_ROOT/tools/run_iterlog.sh\" --host codex postcompact-hook",
+            "commandWindows": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"%PLUGIN_ROOT%\\tools\\run_iterlog.ps1\" --host codex postcompact-hook",
+            "timeout": 10,
+            "statusMessage": "Iterlog: recording automatic compaction completion"
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "matcher": "^iterlog$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"$PLUGIN_ROOT/tools/run_iterlog.sh\" --host codex subagent-context-hook",
+            "commandWindows": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"%PLUGIN_ROOT%\\tools\\run_iterlog.ps1\" --host codex subagent-context-hook",
+            "timeout": 10,
+            "statusMessage": "Iterlog: loading evidence for the subagent"
+          }
+        ]
+      }
+    ]
+  }
+}

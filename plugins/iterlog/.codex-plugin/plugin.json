@@ -1,0 +1,32 @@
+{
+  "name": "iterlog",
+  "version": "3.0.0",
+  "description": "Turn development changes, optimization, verification, and reflection into evidence-backed Iterlogs for Codex and Claude Code.",
+  "author": {
+    "name": "Iterlog contributors"
+  },
+  "license": "MIT",
+  "keywords": [
+    "codex",
+    "claude-code",
+    "iterlog",
+    "development-recap",
+    "change-log",
+    "productivity"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Iterlog",
+    "shortDescription": "Evidence-backed development recaps",
+    "longDescription": "Preserve context before automatic compaction, then delegate a read-only recap of modifications, optimization, blockers, decisions, verification, reflection, and next steps.",
+    "developerName": "Iterlog contributors",
+    "category": "Productivity",
+    "capabilities": [
+      "Read",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "Use $iterlog to recap today's changes, optimization, verification, reflection, and next steps in this project."
+    ]
+  }
+}

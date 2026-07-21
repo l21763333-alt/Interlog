@@ -1,0 +1,20 @@
+{
+  "name": "iterlog-marketplace",
+  "interface": {
+    "displayName": "Iterlog Marketplace"
+  },
+  "plugins": [
+    {
+      "name": "iterlog",
+      "source": {
+        "source": "local",
+        "path": "./plugins/iterlog"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}
