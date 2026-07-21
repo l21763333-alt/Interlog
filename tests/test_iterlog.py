@@ -278,7 +278,10 @@ class IterlogTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         response = json.loads(result.stdout)
         self.assertFalse(response["continue"])
-        self.assertIn("symlink or junction", response["systemMessage"])
+        self.assertRegex(
+            response["systemMessage"],
+            r"(?:symlink or junction|escapes state root)",
+        )
         self.assertEqual(list(outside.iterdir()), [])
 
     def test_scoped_claude_agent_gets_context_and_unrelated_agent_does_not(self) -> None:
