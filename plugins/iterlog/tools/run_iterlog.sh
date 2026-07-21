@@ -4,6 +4,7 @@ set -eu
 SCRIPT_DIR=$(CDPATH= cd "$(dirname "$0")" && pwd)
 RUNTIME="$SCRIPT_DIR/iterlog.py"
 export PYTHONUTF8=1
+export PYTHONIOENCODING=utf-8
 export ITERLOG_HOST=codex
 
 run_if_supported() {

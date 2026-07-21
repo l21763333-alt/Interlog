@@ -14,6 +14,7 @@ import hashlib
 import json
 import os
 import re
+import stat
 import sys
 import tempfile
 import time
@@ -30,10 +31,22 @@ AGENT_TYPES = frozenset(
         "iterlog:iterlog",
     }
 )
-RUNTIME_VERSION = "3.0.0"
+RUNTIME_VERSION = "3.0.1"
 DEFAULT_MAX_CAPTURE_BYTES = 256 * 1024 * 1024
 _STATE_ROOT_OVERRIDE: Path | None = None
 _HOST_OVERRIDE: str | None = None
+
+
+def _configure_standard_streams() -> None:
+    """Use the UTF-8 byte contract expected by Codex and Claude hooks."""
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if not callable(reconfigure):
+            continue
+        try:
+            reconfigure(encoding="utf-8")
+        except (OSError, ValueError):
+            pass
 
 
 def _utc_now() -> datetime:
@@ -118,20 +131,45 @@ def _is_linklike(path: Path) -> bool:
     if path.is_symlink():
         return True
     is_junction = getattr(path, "is_junction", None)
-    return bool(is_junction and is_junction())
+    if is_junction and is_junction():
+        return True
+    try:
+        attributes = int(getattr(path.lstat(), "st_file_attributes", 0))
+    except OSError:
+        return False
+    return bool(
+        attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x00000400)
+    )
 
 
 def _assert_no_state_links(path: Path) -> None:
     """Reject symlinks/junctions inside the private state tree."""
-    root = _state_root()
+    root = Path(os.path.abspath(_state_root()))
+    canonical_root = root.resolve(strict=False)
     candidate = Path(os.path.abspath(path))
+    canonical_candidate = candidate.resolve(strict=False)
+    try:
+        canonical_candidate.relative_to(canonical_root)
+    except ValueError as exc:
+        raise ValueError(f"private path escapes state root: {canonical_candidate}") from exc
+
+    if _is_linklike(root):
+        raise ValueError(f"state root must not be a symlink or junction: {root}")
+
     try:
         relative = candidate.relative_to(root)
-    except ValueError as exc:
-        raise ValueError(f"private path escapes state root: {candidate}") from exc
-    current = root
-    if _is_linklike(current):
-        raise ValueError(f"state root must not be a symlink or junction: {current}")
+        current = root
+    except ValueError:
+        # macOS /var aliases and Windows 8.3 names can give the same physical
+        # tree different lexical prefixes. The original root was checked above;
+        # use its canonical spelling only for this alias form.
+        try:
+            relative = candidate.relative_to(canonical_root)
+        except ValueError as exc:
+            raise ValueError(
+                f"private path uses an unsupported state-root alias: {candidate}"
+            ) from exc
+        current = canonical_root
     for part in relative.parts:
         current = current / part
         if _is_linklike(current):
@@ -189,13 +227,26 @@ def _json_bytes(value: Any) -> bytes:
     return (json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2) + "\n").encode("utf-8")
 
 
+def _set_descriptor_mode(descriptor: int, mode: int) -> None:
+    """Best-effort descriptor permissions; os.fchmod is Windows 3.13+."""
+    fchmod = getattr(os, "fchmod", None)
+    if not callable(fchmod):
+        return
+    try:
+        fchmod(descriptor, mode)
+    except OSError:
+        pass
+
+
 def _atomic_write_bytes(path: Path, data: bytes, mode: int = 0o600) -> None:
     _ensure_private_dir(path.parent)
     fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
     temp_path = Path(temp_name)
+    descriptor_open = True
     try:
-        os.fchmod(fd, mode)
+        _set_descriptor_mode(fd, mode)
         with os.fdopen(fd, "wb") as handle:
+            descriptor_open = False
             handle.write(data)
             handle.flush()
             os.fsync(handle.fileno())
@@ -205,10 +256,11 @@ def _atomic_write_bytes(path: Path, data: bytes, mode: int = 0o600) -> None:
         except OSError:
             pass
     except BaseException:
-        try:
-            os.close(fd)
-        except OSError:
-            pass
+        if descriptor_open:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
         try:
             temp_path.unlink()
         except OSError:
@@ -415,9 +467,11 @@ def _capture_transcript(payload: dict[str, Any]) -> dict[str, Any]:
     temp_path = Path(temp_name)
     digest = hashlib.sha256()
     copied = 0
+    descriptor_open = True
     try:
-        os.fchmod(fd, 0o600)
+        _set_descriptor_mode(fd, 0o600)
         with source.open("rb") as reader, os.fdopen(fd, "wb") as writer:
+            descriptor_open = False
             while True:
                 chunk = reader.read(1024 * 1024)
                 if not chunk:
@@ -511,7 +565,15 @@ def _capture_transcript(payload: dict[str, Any]) -> dict[str, Any]:
             })
         return manifest
     except BaseException:
-        temp_path.unlink(missing_ok=True)
+        if descriptor_open:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        try:
+            temp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
         raise
 
 
@@ -555,7 +617,7 @@ def _validated_manifest(path: Path, *, verify_digest: bool) -> dict[str, Any]:
     resolved_manifest = path.resolve(strict=False)
     if path.is_symlink() or not path.is_file() or not _is_within(resolved_manifest, captures_root):
         raise ValueError(f"manifest is outside the private capture store: {path}")
-    _assert_no_state_links(resolved_manifest)
+    _assert_no_state_links(path)
     item = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(item, dict):
         raise ValueError("manifest must contain one JSON object")
@@ -568,7 +630,7 @@ def _validated_manifest(path: Path, *, verify_digest: bool) -> dict[str, Any]:
     raw_path = raw_candidate.resolve(strict=False)
     if raw_candidate.is_symlink() or not raw_path.is_file():
         raise ValueError("raw snapshot is missing or is a symlink")
-    _assert_no_state_links(raw_path)
+    _assert_no_state_links(raw_candidate)
     if not _is_within(raw_path, captures_root) or raw_path.parent != resolved_manifest.parent:
         raise ValueError("raw snapshot escapes its manifest directory")
     expected_size = int(item.get("source_bytes", -1))
@@ -1548,6 +1610,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     global _HOST_OVERRIDE, _STATE_ROOT_OVERRIDE
+    _configure_standard_streams()
     args = build_parser().parse_args(argv)
     _HOST_OVERRIDE = args.host
     if args.state_root:

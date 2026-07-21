@@ -1,6 +1,6 @@
 {
   "name": "iterlog",
-  "version": "3.0.0",
+  "version": "3.0.1",
   "description": "Turn development changes, optimization, verification, and reflection into evidence-backed Iterlogs for Codex and Claude Code.",
   "author": {
     "name": "Iterlog contributors"

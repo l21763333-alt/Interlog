@@ -9,6 +9,7 @@ $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 [Console]::InputEncoding = $utf8NoBom
 [Console]::OutputEncoding = $utf8NoBom
 $OutputEncoding = $utf8NoBom
+$env:PYTHONIOENCODING = "utf-8"
 $env:PYTHONUTF8 = "1"
 $runtime = Join-Path $PSScriptRoot "iterlog.py"
 $payload = [Console]::In.ReadToEnd()

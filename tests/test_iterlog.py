@@ -26,6 +26,7 @@ class IterlogTests(unittest.TestCase):
         self.env = dict(os.environ)
         self.env["CODEX_HOME"] = str(self.root / ".codex")
         self.env["CODEX_ITERLOG_HOME"] = str(self.state)
+        self.env["PYTHONIOENCODING"] = "cp1252"
 
     def tearDown(self) -> None:
         self.temp.cleanup()
@@ -37,6 +38,7 @@ class IterlogTests(unittest.TestCase):
             [sys.executable, str(SCRIPT), *args],
             input=json.dumps(stdin, ensure_ascii=False) if stdin is not None else None,
             text=True,
+            encoding="utf-8",
             capture_output=True,
             env=self.env,
             cwd=str(cwd) if cwd else None,
@@ -53,6 +55,26 @@ class IterlogTests(unittest.TestCase):
             "trigger": "auto",
             "model": "test-model",
         }
+
+    def assert_capture_succeeded(
+        self, result: subprocess.CompletedProcess[str]
+    ) -> None:
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "", result.stdout)
+
+    def test_legacy_windows_reparse_points_are_linklike(self) -> None:
+        import runpy
+
+        runtime = runpy.run_path(str(SCRIPT))
+
+        class ReparsePoint:
+            def is_symlink(self) -> bool:
+                return False
+
+            def lstat(self) -> object:
+                return type("Stat", (), {"st_file_attributes": 0x00000400})()
+
+        self.assertTrue(runtime["_is_linklike"](ReparsePoint()))
 
     def test_capture_is_byte_exact_private_and_idempotent(self) -> None:
         transcript = self.root / "rollout.jsonl"
@@ -83,7 +105,7 @@ class IterlogTests(unittest.TestCase):
         original = b'{"payload":"authoritative transcript"}\n'
         transcript.write_bytes(original)
         payload = self.capture_payload(transcript)
-        self.run_tool("capture-hook", stdin=payload)
+        self.assert_capture_succeeded(self.run_tool("capture-hook", stdin=payload))
         raw = next(self.state.glob("captures/*/*/*.jsonl"))
         raw.write_bytes(b"CORRUPT")
 
@@ -100,8 +122,12 @@ class IterlogTests(unittest.TestCase):
         second_payload = self.capture_payload(transcript)
         second_payload["session_id"] = "session?a"
 
-        self.assertEqual(self.run_tool("capture-hook", stdin=first_payload).returncode, 0)
-        self.assertEqual(self.run_tool("capture-hook", stdin=second_payload).returncode, 0)
+        self.assert_capture_succeeded(
+            self.run_tool("capture-hook", stdin=first_payload)
+        )
+        self.assert_capture_succeeded(
+            self.run_tool("capture-hook", stdin=second_payload)
+        )
         manifests = list(self.state.glob("captures/*/*/*.manifest.json"))
         self.assertEqual(len(manifests), 2)
         self.assertEqual(len({item.parent.name for item in manifests}), 2)
@@ -156,7 +182,7 @@ class IterlogTests(unittest.TestCase):
         transcript = self.root / "bridge-rollout.jsonl"
         transcript.write_text('{"payload":"bridge evidence"}\n', encoding="utf-8")
         captured = self.run_tool("capture-hook", stdin=self.capture_payload(transcript))
-        self.assertEqual(captured.returncode, 0, captured.stderr)
+        self.assert_capture_succeeded(captured)
 
         context = self.run_tool(
             "context",
@@ -197,6 +223,63 @@ class IterlogTests(unittest.TestCase):
         self.assertIn(str(self.state), additional)
         self.assertIn(json.dumps(prefix, ensure_ascii=False), additional)
         self.assertIn(document["protocol_path"], additional)
+
+    @unittest.skipIf(os.name == "nt", "parent symlink aliases require no privileges on POSIX")
+    def test_parent_path_alias_preserves_capture_validation(self) -> None:
+        real_parent = self.root / "real-state-parent"
+        real_parent.mkdir()
+        alias_parent = self.root / "state-parent-alias"
+        alias_parent.symlink_to(real_parent, target_is_directory=True)
+        self.state = alias_parent / "private-state"
+        self.env["CODEX_ITERLOG_HOME"] = str(self.state)
+
+        transcript = self.root / "aliased-rollout.jsonl"
+        transcript.write_text('{"payload":"aliased evidence"}\n', encoding="utf-8")
+        captured = self.run_tool("capture-hook", stdin=self.capture_payload(transcript))
+        self.assert_capture_succeeded(captured)
+
+        context = self.run_tool(
+            "context",
+            "--cwd",
+            str(self.project),
+            "--session-id",
+            "session-123",
+        )
+        self.assertEqual(context.returncode, 0, context.stderr)
+        captures = json.loads(context.stdout)["captures"]
+        self.assertEqual(len(captures), 1)
+
+        verified = self.run_tool("verify", "--manifest", captures[0]["manifest_path"])
+        self.assertEqual(verified.returncode, 0, verified.stderr)
+        self.assertTrue(json.loads(verified.stdout)["capture"]["content_verified"])
+
+    @unittest.skipIf(os.name == "nt", "state-root symlinks require no privileges on POSIX")
+    def test_state_root_symlink_remains_rejected(self) -> None:
+        real_state = self.root / "real-private-state"
+        real_state.mkdir()
+        alias_state = self.root / "private-state-alias"
+        alias_state.symlink_to(real_state, target_is_directory=True)
+        self.env["CODEX_ITERLOG_HOME"] = str(alias_state)
+
+        doctor = self.run_tool("doctor")
+        self.assertEqual(doctor.returncode, 2)
+        self.assertIn("symlink or junction", doctor.stderr)
+
+    @unittest.skipIf(os.name == "nt", "nested symlinks require no privileges on POSIX")
+    def test_nested_state_symlink_remains_rejected(self) -> None:
+        outside = self.root / "outside-state"
+        outside.mkdir()
+        self.state.mkdir()
+        (self.state / "captures").symlink_to(outside, target_is_directory=True)
+
+        transcript = self.root / "linked-rollout.jsonl"
+        transcript.write_text('{"payload":"must stay private"}\n', encoding="utf-8")
+        result = self.run_tool("capture-hook", stdin=self.capture_payload(transcript))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        response = json.loads(result.stdout)
+        self.assertFalse(response["continue"])
+        self.assertIn("symlink or junction", response["stopReason"])
+        self.assertEqual(list(outside.iterdir()), [])
 
     def test_scoped_claude_agent_gets_context_and_unrelated_agent_does_not(self) -> None:
         self.env["ITERLOG_HOST"] = "claude"
@@ -271,7 +354,7 @@ class IterlogTests(unittest.TestCase):
         env["ITERLOG_PYTHON"] = sys.executable
         env["ITERLOG_HOST"] = "codex"  # the bridge must override this
         payload = {
-            "session_id": "bridge-session",
+            "session_id": "桥接会话",
             "cwd": str(self.project),
             "hook_event_name": "SessionStart",
         }
@@ -279,6 +362,7 @@ class IterlogTests(unittest.TestCase):
             [node, str(bridge), "--host", "claude", "session-context-hook"],
             input=json.dumps(payload),
             text=True,
+            encoding="utf-8",
             capture_output=True,
             env=env,
             check=False,
@@ -286,6 +370,7 @@ class IterlogTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         context = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
         self.assertIn("- host: claude", context)
+        self.assertIn("桥接会话", context)
         self.assertIn(str(self.state), context)
 
     @unittest.skipUnless(shutil.which("node"), "Node.js is not installed")
@@ -305,6 +390,7 @@ class IterlogTests(unittest.TestCase):
             [node, str(bridge), "--host", "claude", "capture-hook"],
             input=json.dumps(payload),
             text=True,
+            encoding="utf-8",
             capture_output=True,
             env=env,
             check=False,
@@ -354,7 +440,9 @@ class IterlogTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         context = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
         self.assertIn(project.name, context)
-        self.assertIn(json.dumps(str(project), ensure_ascii=False)[1:-1], context)
+        self.assertIn(
+            json.dumps(str(project.resolve()), ensure_ascii=False)[1:-1], context
+        )
         self.assertIn("会话-一", context)
         self.assertIn(str(state), context)
         self.assertNotIn("\ufffd", result.stdout)
@@ -370,6 +458,7 @@ class IterlogTests(unittest.TestCase):
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
+                encoding="utf-8",
                 env=self.env,
             )
             for _ in range(4)
@@ -384,7 +473,9 @@ class IterlogTests(unittest.TestCase):
     def test_subagent_context_points_to_capture_without_copying_content(self) -> None:
         transcript = self.root / "rollout.jsonl"
         transcript.write_text('{"payload":"sensitive body"}\n', encoding="utf-8")
-        self.run_tool("capture-hook", stdin=self.capture_payload(transcript))
+        self.assert_capture_succeeded(
+            self.run_tool("capture-hook", stdin=self.capture_payload(transcript))
+        )
         payload = {
             "session_id": "session-123",
             "turn_id": "agent-turn",
@@ -420,8 +511,12 @@ class IterlogTests(unittest.TestCase):
         first_payload.update({"session_id": "session-one", "turn_id": "turn-one"})
         second_payload = self.capture_payload(second)
         second_payload.update({"session_id": "session-two", "turn_id": "turn-two"})
-        self.assertEqual(self.run_tool("capture-hook", stdin=first_payload).returncode, 0)
-        self.assertEqual(self.run_tool("capture-hook", stdin=second_payload).returncode, 0)
+        self.assert_capture_succeeded(
+            self.run_tool("capture-hook", stdin=first_payload)
+        )
+        self.assert_capture_succeeded(
+            self.run_tool("capture-hook", stdin=second_payload)
+        )
 
         current_only = self.run_tool(
             "context",
@@ -457,7 +552,9 @@ class IterlogTests(unittest.TestCase):
     def test_render_writes_only_private_state_and_redacts_secrets(self) -> None:
         transcript = self.root / "render-rollout.jsonl"
         transcript.write_text('{"payload":"evidence"}\n', encoding="utf-8")
-        self.run_tool("capture-hook", stdin=self.capture_payload(transcript))
+        self.assert_capture_succeeded(
+            self.run_tool("capture-hook", stdin=self.capture_payload(transcript))
+        )
         capture_id = json.loads(
             next(self.state.glob("captures/*/*/*.manifest.json")).read_text(encoding="utf-8")
         )["capture_id"]
@@ -676,7 +773,9 @@ class IterlogTests(unittest.TestCase):
     def test_render_reverifies_referenced_capture_digest(self) -> None:
         transcript = self.root / "rollout.jsonl"
         transcript.write_bytes(b"trusted evidence\n")
-        self.run_tool("capture-hook", stdin=self.capture_payload(transcript))
+        self.assert_capture_succeeded(
+            self.run_tool("capture-hook", stdin=self.capture_payload(transcript))
+        )
         manifest_path = next(self.state.glob("captures/*/*/*.manifest.json"))
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         Path(manifest["raw_snapshot_path"]).write_bytes(b"tampered evidence\n")

@@ -27,7 +27,7 @@ from typing import Any, Iterable
 
 
 PACKAGE_NAME = "iterlog"
-PACKAGE_VERSION = "3.0.0"
+PACKAGE_VERSION = "3.0.1"
 SCHEMA_VERSION = 1
 MANIFEST_NAME = "iterlog-install.json"
 SKILL_NAME = "iterlog"
@@ -64,6 +64,20 @@ HOOK_SPECS = (
         "Loading Iterlog evidence",
     ),
 )
+
+
+def _configure_standard_streams() -> None:
+    """Keep machine-readable CLI output UTF-8 on every supported host."""
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if not callable(reconfigure):
+            continue
+        try:
+            reconfigure(encoding="utf-8")
+        except (OSError, ValueError):
+            pass
+
+
 HOOK_ACTIONS = frozenset(spec[2] for spec in HOOK_SPECS)
 
 
@@ -163,7 +177,7 @@ def _fingerprint(value: Any) -> str:
 
 
 def _path_key(path: Path | str) -> str:
-    return os.path.normcase(os.path.abspath(os.fspath(path)))
+    return os.path.normcase(os.fspath(_resolve(path)))
 
 
 def _utc_now() -> str:
@@ -912,6 +926,8 @@ def _doctor(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
                     env=runtime_env,
                     capture_output=True,
                     text=True,
+                    encoding="utf-8",
+                    errors="replace",
                     timeout=10,
                     check=False,
                 )
@@ -1092,6 +1108,7 @@ def _print_result(result: dict[str, Any], *, as_json: bool) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    _configure_standard_streams()
     if sys.version_info < (3, 10):
         print("Python 3.10 or newer is required", file=sys.stderr)
         return 2

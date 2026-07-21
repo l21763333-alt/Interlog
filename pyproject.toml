@@ -1,6 +1,6 @@
 [project]
 name = "iterlog"
-version = "3.0.0"
+version = "3.0.1"
 description = "Evidence-backed development recaps for Codex and Claude Code with pre-compaction capture"
 readme = "README.md"
 requires-python = ">=3.10"

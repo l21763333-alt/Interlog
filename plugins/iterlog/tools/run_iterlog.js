@@ -51,7 +51,12 @@ for (const candidate of candidates) {
     {
       input,
       encoding: null,
-      env: { ...process.env, ITERLOG_HOST: "claude" },
+      env: {
+        ...process.env,
+        ITERLOG_HOST: "claude",
+        PYTHONIOENCODING: "utf-8",
+        PYTHONUTF8: "1",
+      },
       maxBuffer: 16 * 1024 * 1024,
       windowsHide: true,
     },

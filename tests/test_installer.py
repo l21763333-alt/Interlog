@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -14,6 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 PLUGIN = ROOT / "plugins" / "iterlog"
 MANAGER = ROOT / "scripts" / "manage.py"
 TOOL_SOURCE = PLUGIN / "tools" / "iterlog.py"
+PACKAGE_VERSION = (ROOT / "VERSION").read_text(encoding="utf-8").strip()
 OWNED_ACTIONS = {
     "session-context-hook",
     "capture-hook",
@@ -100,11 +102,13 @@ class InstallerTests(unittest.TestCase):
         environment = os.environ.copy()
         environment["HOME"] = str(self.home)
         environment["USERPROFILE"] = str(self.home)
+        environment["PYTHONIOENCODING"] = "cp1252"
         completed = subprocess.run(
             arguments,
             cwd=ROOT,
             env=environment,
             text=True,
+            encoding="utf-8",
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             check=False,
@@ -146,7 +150,7 @@ class InstallerTests(unittest.TestCase):
         manifest_path = self.codex_home / "iterlog-install.json"
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         self.assertEqual(manifest["package"], "iterlog")
-        self.assertEqual(manifest["version"], "3.0.0")
+        self.assertEqual(manifest["version"], PACKAGE_VERSION)
         self.assertGreaterEqual(len(manifest["files"]), 5)
         self.assertTrue(
             all(
@@ -211,7 +215,10 @@ class InstallerTests(unittest.TestCase):
         ]
         self.assertEqual(len(executable_checks), 1)
         self.assertFalse(executable_checks[0]["ok"])
-        self.assertIn(str(missing_python), executable_checks[0]["detail"])
+        self.assertIn(
+            str(missing_python.resolve(strict=False)),
+            executable_checks[0]["detail"],
+        )
 
     def test_complex_hooks_are_merged_and_legacy_handlers_are_deduplicated(self) -> None:
         self.codex_home.mkdir(parents=True)
@@ -294,15 +301,16 @@ class InstallerTests(unittest.TestCase):
         self.run_manager("install", codex_home=codex_home, skill_root=skill_root)
 
         tool = codex_home / "tools" / "iterlog" / "iterlog.py"
+        resolved_tool = tool.resolve()
         handlers = owned_handlers(self.read_hooks(codex_home))
         self.assertEqual(len(handlers), 4)
         for _, handler, _ in handlers:
             command = handler["command"]
             command_windows = handler["commandWindows"]
-            self.assertIn(str(tool), command)
-            self.assertIn(str(tool), command_windows)
-            self.assertIn("'", command)
-            self.assertIn(f'"{tool}"', command_windows)
+            self.assertIn(str(resolved_tool), command)
+            self.assertIn(str(resolved_tool), command_windows)
+            self.assertIn(shlex.quote(str(resolved_tool)), command)
+            self.assertIn(subprocess.list2cmdline([str(resolved_tool)]), command_windows)
         self.assertTrue((skill_root / "iterlog" / "SKILL.md").is_file())
 
     def test_two_codex_homes_are_isolated(self) -> None:
@@ -322,10 +330,10 @@ class InstallerTests(unittest.TestCase):
             str(handler.get("command", "")) + str(handler.get("commandWindows", ""))
             for _, handler, _ in owned_handlers(self.read_hooks(second_home))
         )
-        self.assertIn(str(first_home), first_hooks)
-        self.assertNotIn(str(second_home), first_hooks)
-        self.assertIn(str(second_home), second_hooks)
-        self.assertNotIn(str(first_home), second_hooks)
+        self.assertIn(str(first_home.resolve()), first_hooks)
+        self.assertNotIn(str(second_home.resolve()), first_hooks)
+        self.assertIn(str(second_home.resolve()), second_hooks)
+        self.assertNotIn(str(first_home.resolve()), second_hooks)
         self.assertTrue((first_skills / "iterlog" / "SKILL.md").is_file())
         self.assertTrue((second_skills / "iterlog" / "SKILL.md").is_file())
 
@@ -440,7 +448,7 @@ class InstallerTests(unittest.TestCase):
         migrated = json.loads(
             (self.codex_home / "iterlog-install.json").read_text(encoding="utf-8")
         )
-        self.assertEqual(migrated["version"], "3.0.0")
+        self.assertEqual(migrated["version"], PACKAGE_VERSION)
         self.assertEqual(migrated["installed_at"], legacy_manifest["installed_at"])
         self.assertEqual(len(migrated["hooks"]), 4)
         self.assertEqual({item["action"] for item in migrated["hooks"]}, OWNED_ACTIONS)
